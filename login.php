@@ -20,7 +20,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['lookup_santri'])) {
         exit;
     }
     $stmt = $pdo->prepare(
-        "SELECT s.id, u.full_name, s.student_no
+        "SELECT s.id, u.full_name, s.student_no, s.class_level
          FROM students s JOIN users u ON u.id = s.user_id
          WHERE s.active = 1 AND u.role = 'santri'
            AND (u.full_name LIKE ? OR s.student_no LIKE ?)

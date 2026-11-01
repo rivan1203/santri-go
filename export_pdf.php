@@ -1,18 +1,12 @@
 <?php
 require __DIR__ . '/config.php';
 require_role('admin');
-$from = $_GET['from'] ?? date('Y-m-01');
-$to = $_GET['to'] ?? date('Y-m-d');
-$status = $_GET['status'] ?? 'all';
-$validDate = static function ($value) { $d=DateTime::createFromFormat('!Y-m-d',(string)$value); return $d && $d->format('Y-m-d')===$value; };
-if (!$validDate($from) || !$validDate($to) || $from>$to) { $from=date('Y-m-01'); $to=date('Y-m-d'); }
-if (!in_array($status,['pending','paid','rejected','failed','expire'],true)) $status='all';
-$where='WHERE DATE(p.created_at) BETWEEN ? AND ?'; $params=[$from,$to];
-if($status!=='all'){ $where.=' AND p.status=?'; $params[]=$status; }
-$sql="SELECT p.*,u.full_name,s.student_no,s.class_level,fc.name AS category,verifier.full_name AS verifier_name
-FROM payments p JOIN students s ON s.id=p.student_id JOIN users u ON u.id=s.user_id
-JOIN fee_categories fc ON fc.id=p.fee_category_id LEFT JOIN users verifier ON verifier.id=p.verified_by
-$where ORDER BY p.created_at DESC";
+$from = trim((string)($_GET['from'] ?? '')); $to = trim((string)($_GET['to'] ?? '')); $status = $_GET['status'] ?? 'all';
+$validDate = static function($v){$d=DateTime::createFromFormat('!Y-m-d',(string)$v);return $d&&$d->format('Y-m-d')===$v;};
+if(($from!==''&&!$validDate($from))||($to!==''&&!$validDate($to))||($from!==''&&$to!==''&&$from>$to)){$from='';$to='';}
+if(!in_array($status,['pending','paid','rejected','failed','expire'],true))$status='all';
+$whereParts=[];$params=[];if($from!==''){$whereParts[]='DATE(p.created_at)>=?';$params[]=$from;}if($to!==''){$whereParts[]='DATE(p.created_at)<=?';$params[]=$to;}if($status!=='all'){$whereParts[]='p.status=?';$params[]=$status;}$where=$whereParts?'WHERE '.implode(' AND ',$whereParts):'';
+$sql="SELECT p.*,u.full_name,s.student_no,s.class_level,fc.name AS category,verifier.full_name AS verifier_name FROM payments p LEFT JOIN students s ON s.id=p.student_id LEFT JOIN users u ON u.id=s.user_id LEFT JOIN fee_categories fc ON fc.id=p.fee_category_id LEFT JOIN users verifier ON verifier.id=p.verified_by $where ORDER BY p.created_at DESC";
 $stmt=$pdo->prepare($sql);$stmt->execute($params);$rows=$stmt->fetchAll(PDO::FETCH_ASSOC);
 $statusLabels=['all'=>'Semua status','pending'=>'Menunggu','paid'=>'Lunas','rejected'=>'Ditolak','failed'=>'Gagal','expire'=>'Kedaluwarsa'];
 $methodLabels=['cash'=>'Tunai','bank_transfer'=>'Transfer bank'];
@@ -25,8 +19,8 @@ function h($v){return htmlspecialchars((string)$v,ENT_QUOTES,'UTF-8');}
 </style></head><body><div class="toolbar"><button class="btn print" onclick="window.print()">Cetak PDF</button><button class="btn back" onclick="history.length>1?history.back():location.href='reports.php'">Kembali</button></div>
 <main class="paper"><header class="head"><?php if($logo):?><img class="logo" src="<?=h($logo)?>" alt="Logo pesantren"><?php endif;?><div class="identity"><h1><?=h(mb_strtoupper($school,'UTF-8'))?></h1><p>Dokumen Administrasi Pesantren · Sistem Santri Go</p></div></header>
 <div class="doc-title"><h2>Laporan Transaksi Pembayaran</h2><p>Dokumen resmi administrasi keuangan</p></div>
-<div class="meta"><span><b>Periode:</b> <?=h(date('d/m/Y',strtotime($from)))?> – <?=h(date('d/m/Y',strtotime($to)))?></span><span><b>Status:</b> <?=h($statusLabels[$status])?></span><span><b>Tanggal cetak:</b> <?=date('d/m/Y H:i')?></span></div>
+<div class="meta"><span><b>Periode:</b> <?=h(($from||$to)?(($from?date('d/m/Y',strtotime($from)):'Awal').' – '.($to?date('d/m/Y',strtotime($to)):'Sekarang')):'Semua tanggal')?></span><span><b>Status:</b> <?=h($statusLabels[$status])?></span><span><b>Tanggal cetak:</b> <?=date('d/m/Y H:i')?></span></div>
 <section class="stats"><div class="stat"><span>Total data transaksi</span><strong><?=number_format(count($rows),0,',','.')?></strong></div><div class="stat"><span>Transaksi lunas</span><strong><?=number_format($paidCount,0,',','.')?></strong></div><div class="stat"><span>Total nominal</span><strong>Rp <?=number_format($total,0,',','.')?></strong></div><div class="stat"><span>Total nominal lunas</span><strong>Rp <?=number_format($paid,0,',','.')?></strong></div></section>
 <table><thead><tr><th class="center">No.</th><th>Tanggal</th><th>Nama santri</th><th>No. induk</th><th>Jenjang</th><th>Tagihan</th><th>Periode</th><th>Metode</th><th>Status</th><th>Verifikator</th><th class="money">Nominal</th></tr></thead><tbody>
-<?php if(!$rows):?><tr><td colspan="11" class="empty">Tidak ada transaksi pada periode ini.</td></tr><?php else: foreach($rows as $i=>$r):?><tr><td class="center"><?=$i+1?></td><td><?=h(date('d/m/Y H:i',strtotime($r['created_at'])))?></td><td><?=h($r['full_name'])?></td><td><?=h($r['student_no'])?></td><td><?=h($r['class_level'])?></td><td><?=h($r['category'])?></td><td><?=h(date('m/Y',strtotime($r['billing_month'])))?></td><td><?=h($methodLabels[$r['method']]??$r['method'])?></td><td><?=h($statusLabels[$r['status']]??$r['status'])?></td><td><?=h($r['verifier_name']?:'—')?></td><td class="money">Rp <?=number_format((float)$r['total_amount'],0,',','.')?></td></tr><?php endforeach;endif;?>
+<?php if(!$rows):?><tr><td colspan="11" class="empty">Tidak ada transaksi pada periode ini.</td></tr><?php else: foreach($rows as $i=>$r):?><tr><td class="center"><?=$i+1?></td><td><?=h(date('d/m/Y H:i',strtotime($r['created_at'])))?></td><td><?=h($r['full_name']?:'Data santri tidak tersedia')?></td><td><?=h($r['student_no']?:'—')?></td><td><?=h($r['class_level']?:'—')?></td><td><?=h($r['category']?:'—')?></td><td><?=h(date('m/Y',strtotime($r['billing_month'])))?></td><td><?=h($methodLabels[$r['method']]??$r['method'])?></td><td><?=h($statusLabels[$r['status']]??$r['status'])?></td><td><?=h($r['verifier_name']?:'—')?></td><td class="money">Rp <?=number_format((float)$r['total_amount'],0,',','.')?></td></tr><?php endforeach;endif;?>
 </tbody></table><footer class="footer"><span><?=h($school)?> · Laporan administrasi keuangan</span><span>Dicetak melalui Santri Go</span></footer></main><script>window.addEventListener('load',()=>setTimeout(()=>window.print(),350));</script></body></html>
