@@ -9,6 +9,25 @@ $monthlyRows = $pdo->query("SELECT DATE_FORMAT(created_at, '%Y-%m') AS ym, SUM(C
 $monthlyMap = []; foreach ($monthlyRows as $mr) { $monthlyMap[$mr['ym']] = (float)$mr['total_paid']; }
 $chartLabels = []; $chartValues = []; for ($i=11; $i>=0; $i--) { $ym = date('Y-m', strtotime(date('Y-m-01') . " -$i months")); $chartLabels[] = date('M y', strtotime($ym . '-01')); $chartValues[] = $monthlyMap[$ym] ?? 0; }
 $overdue = (int)$pdo->query("SELECT COUNT(*) FROM students s WHERE s.active=1 AND EXISTS (SELECT 1 FROM payments p WHERE p.student_id=s.id AND p.status='paid' AND p.billing_month=DATE_FORMAT(CURDATE(),'%Y-%m-01'))=0")->fetchColumn();
+$visitorTotal = (int)$pdo->query("SELECT COUNT(DISTINCT visitor_key) FROM visitor_logs")->fetchColumn();
+$visitorToday = (int)$pdo->query("SELECT COUNT(*) FROM visitor_logs WHERE DATE(visited_at)=CURDATE()")->fetchColumn();
+$visitorMonth = (int)$pdo->query("SELECT COUNT(DISTINCT visitor_key) FROM visitor_logs WHERE YEAR(visited_at)=YEAR(CURDATE()) AND MONTH(visited_at)=MONTH(CURDATE())")->fetchColumn();
+$visitorMonthlyRows = $pdo->query("
+    SELECT DATE_FORMAT(visited_at, '%Y-%m') AS ym, COUNT(*) AS visits
+    FROM visitor_logs
+    WHERE visited_at >= DATE_SUB(CURDATE(), INTERVAL 11 MONTH)
+    GROUP BY DATE_FORMAT(visited_at, '%Y-%m')
+    ORDER BY ym
+")->fetchAll(PDO::FETCH_ASSOC);
+$visitorMonthlyMap = [];
+foreach ($visitorMonthlyRows as $vr) $visitorMonthlyMap[$vr['ym']] = (int)$vr['visits'];
+$visitorChartLabels = [];
+$visitorChartValues = [];
+for ($i=11; $i>=0; $i--) {
+    $ym = date('Y-m', strtotime(date('Y-m-01') . " -$i months"));
+    $visitorChartLabels[] = date('M y', strtotime($ym . '-01'));
+    $visitorChartValues[] = $visitorMonthlyMap[$ym] ?? 0;
+}
 $recent = $pdo->query("SELECT p.*,u.full_name,fc.name category FROM payments p JOIN students s ON s.id=p.student_id JOIN users u ON u.id=s.user_id JOIN fee_categories fc ON fc.id=p.fee_category_id ORDER BY p.created_at DESC LIMIT 7")->fetchAll();
 require __DIR__ . '/includes/header.php';
 ?>
@@ -39,6 +58,19 @@ require __DIR__ . '/includes/header.php';
         <div class="stat-note">Perlu ditinjau petugas</div>
     </div>
 </div>
+<div class="grid stats-grid visitor-stats-grid">
+    <div class="card stat-card"><div class="stat-icon">◎</div><div class="stat-label">Total pengunjung</div><div class="stat-value"><?= number_format($visitorTotal) ?></div><div class="stat-note">Sesi pengunjung tercatat</div></div>
+    <div class="card stat-card"><div class="stat-icon">◷</div><div class="stat-label">Kunjungan hari ini</div><div class="stat-value"><?= number_format($visitorToday) ?></div><div class="stat-note">Jumlah halaman yang dibuka hari ini</div></div>
+    <div class="card stat-card"><div class="stat-icon">▦</div><div class="stat-label">Pengunjung bulan ini</div><div class="stat-value"><?= number_format($visitorMonth) ?></div><div class="stat-note">Sesi unik pada bulan berjalan</div></div>
+</div>
+<section class="card monthly-chart-card">
+    <div class="section-head"><div><h2>Grafik kunjungan website</h2><p>Jumlah halaman yang dibuka selama 12 bulan terakhir.</p></div><a class="btn btn-light" href="<?= APP_BASE ?>/visitor_logs.php">Lihat log aktivitas →</a></div>
+    <div class="monthly-chart" role="img" aria-label="Grafik jumlah kunjungan website setiap bulan">
+      <?php $maxVisitorChart = max(array_merge([1], $visitorChartValues)); foreach ($visitorChartValues as $idx => $value): $height = max(3, (int)round(($value / $maxVisitorChart) * 100)); ?>
+      <div class="chart-column"><div class="chart-value"><?= number_format($value) ?></div><div class="chart-track"><div class="chart-bar" style="height:<?= $height ?>%"></div></div><div class="chart-label"><?= e($visitorChartLabels[$idx]) ?></div></div>
+      <?php endforeach; ?>
+    </div>
+</section>
 <section class="card monthly-chart-card">
     <div class="section-head"><div><h2>Grafik pembayaran bulanan</h2><p>Total pembayaran berstatus lunas selama 12 bulan terakhir.</p></div><span class="pill">12 bulan terakhir</span></div>
     <div class="monthly-chart" role="img" aria-label="Grafik total pembayaran lunas setiap bulan">

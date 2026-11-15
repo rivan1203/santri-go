@@ -1,6 +1,7 @@
 <?php
 
 declare(strict_types=1);
+date_default_timezone_set('Asia/Jakarta');
 session_start();
 
 const DB_HOST = '127.0.0.1';
@@ -24,9 +25,57 @@ try {
             PDO::ATTR_EMULATE_PREPARES => false
         ]
     );
+    // Samakan zona waktu sesi MySQL dengan WIB (Asia/Jakarta), agar NOW(),
+    // CURDATE(), dan pencatatan waktu statistik menggunakan jam Indonesia.
+    $pdo->exec("SET time_zone = '+07:00'");
 } catch (PDOException $e) {
     http_response_code(500);
     exit('Koneksi database gagal. Periksa pengaturan config.php dan pastikan database sudah diimpor.');
+}
+
+
+// Catat setiap permintaan halaman PHP. IP berasal dari REMOTE_ADDR (bukan header
+// proxy yang dapat dipalsukan); pengunjung anonim tetap anonim.
+try {
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS visitor_logs (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            visitor_key CHAR(64) NOT NULL,
+            user_id BIGINT UNSIGNED NULL,
+            visitor_name VARCHAR(150) NULL,
+            login_status ENUM('login','anonymous') NOT NULL DEFAULT 'anonymous',
+            page_path VARCHAR(500) NOT NULL,
+            ip_address VARCHAR(45) NOT NULL,
+            user_agent VARCHAR(500) NULL,
+            visited_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_visitor_visited (visited_at),
+            INDEX idx_visitor_key (visitor_key),
+            INDEX idx_visitor_user (user_id),
+            CONSTRAINT fk_visitor_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+    $currentUser = $_SESSION['user'] ?? null;
+    $sessionKey = hash('sha256', session_id());
+    $pagePath = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+    $pagePath = substr($pagePath, 0, 500);
+    $remoteIp = filter_var($_SERVER['REMOTE_ADDR'] ?? '', FILTER_VALIDATE_IP) ?: '0.0.0.0';
+    $userAgent = substr((string)($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 500);
+    $log = $pdo->prepare("
+        INSERT INTO visitor_logs
+            (visitor_key, user_id, visitor_name, login_status, page_path, ip_address, user_agent, visited_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+    ");
+    $log->execute([
+        $sessionKey,
+        $currentUser ? (int)$currentUser['id'] : null,
+        $currentUser ? (string)$currentUser['full_name'] : null,
+        $currentUser ? 'login' : 'anonymous',
+        $pagePath,
+        $remoteIp,
+        $userAgent
+    ]);
+} catch (Throwable $e) {
+    // Pencatatan pengunjung tidak boleh membuat website utama gagal dibuka.
 }
 
 

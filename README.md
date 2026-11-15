@@ -80,3 +80,16 @@ Pada database lama, jalankan `upgrade_pemisahan_tagihan.sql` satu kali melalui p
 - Data Santri, Kelola User, Pembayaran & Laporan, Riwayat Pembayaran, pencarian santri, serta daftar nominal menggunakan pola pagination yang konsisten.
 - Detail santri menghitung tagihan per bulan dan jenis pembayaran sejak tanggal santri terdaftar. Pembayaran berstatus `paid` dianggap lunas; transaksi menunggu verifikasi dan bulan tanpa pembayaran tetap ditampilkan sebagai belum lunas.
 - Prediksi dihitung saat halaman dibuka menggunakan riwayat pembayaran aktual dan ID santri. Persentase yang ditampilkan adalah proporsi kelas positif pada leaf Decision Tree, bukan probabilitas terkalibrasi.
+
+
+## Statistik dan log pengunjung
+
+- Dashboard admin menampilkan total sesi pengunjung, jumlah tampilan halaman hari ini, dan sesi unik bulan ini.
+- Grafik dashboard menampilkan jumlah tampilan halaman per bulan selama 12 bulan terakhir.
+- Menu **Log Pengunjung** menampilkan waktu, nama akun jika login, status login/anonim, halaman, dan alamat IP.
+- Log dilengkapi pencarian kata kunci serta filter rentang tanggal dan hanya dapat diakses oleh akun berperan `admin`.
+- Pengunjung anonim dicatat sebagai **Pengunjung anonim**; aplikasi tidak mengklaim mengetahui nama atau identitas asli mereka.
+- Identitas sesi dihitung dari sesi PHP. Setelah login yang meregenerasi ID sesi, sesi sebelum dan sesudah login dapat terhitung terpisah.
+- Tabel `visitor_logs` dibuat otomatis oleh `config.php` untuk instalasi yang sudah berjalan. Untuk instalasi baru, tabel juga disertakan di `database.sql`.
+
+**Catatan privasi:** alamat IP dan informasi akses merupakan data yang perlu dilindungi. Beri tahu pengguna melalui kebijakan privasi, batasi akses database dan dashboard, gunakan HTTPS, serta tetapkan masa retensi dan hapus log lama secara berkala sesuai kebijakan organisasi/peraturan yang berlaku.

@@ -1,4 +1,5 @@
 SET FOREIGN_KEY_CHECKS=0;
+DROP TABLE IF EXISTS visitor_logs;
 DROP TABLE IF EXISTS payments;
 DROP TABLE IF EXISTS fee_categories;
 DROP TABLE IF EXISTS students;
@@ -73,3 +74,21 @@ INSERT INTO users (username, password_hash, role, full_name) VALUES
 INSERT INTO fee_categories (name, amount, spp_amount, description) VALUES
 ('SMP', 150000, 100000, 'Kategori jenjang SMP'),
 ('SMA', 200000, 125000, 'Kategori jenjang SMA');
+
+
+-- Log kunjungan website (juga dibuat otomatis oleh config.php pada instalasi lama).
+CREATE TABLE IF NOT EXISTS visitor_logs (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  visitor_key CHAR(64) NOT NULL,
+  user_id BIGINT UNSIGNED NULL,
+  visitor_name VARCHAR(150) NULL,
+  login_status ENUM('login','anonymous') NOT NULL DEFAULT 'anonymous',
+  page_path VARCHAR(500) NOT NULL,
+  ip_address VARCHAR(45) NOT NULL,
+  user_agent VARCHAR(500) NULL,
+  visited_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_visitor_visited (visited_at),
+  INDEX idx_visitor_key (visitor_key),
+  INDEX idx_visitor_user (user_id),
+  CONSTRAINT fk_visitor_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

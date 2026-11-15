@@ -69,6 +69,7 @@ unset($_SESSION['flash']);
     <a class="nav-link <?= basename($_SERVER['PHP_SELF'])==='nominal_spp.php'?'active':'' ?>" href="<?= APP_BASE ?>/nominal_spp.php"><span>▤</span> Nominal SPP</a>
     <a class="nav-link <?= basename($_SERVER['PHP_SELF'])==='users.php'?'active':'' ?>" href="<?= APP_BASE ?>/users.php"><span>♙</span> Kelola User</a>
     <a class="nav-link <?= in_array(basename($_SERVER['PHP_SELF']),['payments.php','reports.php'],true)?'active':'' ?>" href="<?= APP_BASE ?>/payments.php"><span>▤</span> Pembayaran & Laporan</a>
+    <a class="nav-link <?= basename($_SERVER['PHP_SELF'])==='visitor_logs.php'?'active':'' ?>" href="<?= APP_BASE ?>/visitor_logs.php"><span>◎</span> Log Pengunjung</a>
     <a class="nav-link <?= basename($_SERVER['PHP_SELF'])==='settings.php'?'active':'' ?>" href="<?= APP_BASE ?>/settings.php"><span>⚙</span> Pengaturan Pesantren</a>
   <?php else: ?>
     <a class="nav-link <?= basename($_SERVER['PHP_SELF'])==='student.php'?'active':'' ?>" href="<?= APP_BASE ?>/student.php"><span>▦</span> Dashboard Saya</a>
