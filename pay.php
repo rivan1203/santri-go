@@ -259,7 +259,7 @@ require __DIR__ . '/includes/header.php';
 
     function confirmMethod() {
         if (!selectedBills().length) {
-            alert('Pilih minimal satu kartu tagihan terlebih dahulu.');
+            showAppNotice('Pilih minimal satu kartu tagihan terlebih dahulu.', 'error');
             closeMethodModal();
             return
         }
@@ -267,11 +267,11 @@ require __DIR__ . '/includes/header.php';
             const bank = document.querySelector('input[name="bank_destination"]:checked');
             const proof = document.getElementById('proof');
             if (!bank) {
-                alert('Pilih bank tujuan transfer terlebih dahulu.');
+                showAppNotice('Pilih bank tujuan transfer terlebih dahulu.', 'error');
                 return
             }
             if (!proof.files || !proof.files.length) {
-                alert('Unggah bukti transaksi terlebih dahulu.');
+                showAppNotice('Unggah bukti transaksi terlebih dahulu.', 'error');
                 return
             }
         }
@@ -291,12 +291,12 @@ require __DIR__ . '/includes/header.php';
     document.getElementById('pay-form').addEventListener('submit', e => {
         if (!selectedBills().length) {
             e.preventDefault();
-            alert('Pilih minimal satu tagihan.');
+            showAppNotice('Pilih minimal satu tagihan.', 'error');
             return
         }
         if (!document.getElementById('payment-method').value) {
             e.preventDefault();
-            alert('Pilih metode pembayaran terlebih dahulu.');
+            showAppNotice('Pilih metode pembayaran terlebih dahulu.', 'error');
             return
         }
         if (document.getElementById('payment-method').value === 'bank_transfer' && (!document.querySelector('input[name="bank_destination"]:checked') || !document.getElementById('proof').files.length)) {
@@ -308,14 +308,14 @@ require __DIR__ . '/includes/header.php';
         button.addEventListener('click', async event => {
             event.preventDefault(); event.stopPropagation();
             const account = button.dataset.account || '';
-            if (!account || account === 'Nomor rekening belum diatur admin') { alert('Nomor rekening belum diatur admin.'); return; }
+            if (!account || account === 'Nomor rekening belum diatur admin') { showAppNotice('Nomor rekening belum diatur admin.', 'error'); return; }
             try {
                 await navigator.clipboard.writeText(account);
                 const original = button.textContent; button.textContent = '✓ Tersalin';
                 setTimeout(() => button.textContent = original, 1800);
             } catch (error) {
                 const field = document.createElement('textarea'); field.value = account; field.style.position = 'fixed'; field.style.opacity = '0'; document.body.appendChild(field); field.select();
-                const copied = document.execCommand('copy'); field.remove(); alert(copied ? 'Nomor rekening berhasil disalin.' : 'Gagal menyalin. Silakan salin nomor rekening secara manual.');
+                const copied = document.execCommand('copy'); field.remove(); showAppNotice(copied ? 'Nomor rekening berhasil disalin.' : 'Gagal menyalin. Silakan salin nomor rekening secara manual.', copied ? 'success' : 'error');
             }
         });
     });

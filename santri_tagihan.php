@@ -5,13 +5,19 @@ $pageTitle = 'Cari Santri & Tagihan';
 $term = trim($_GET['q'] ?? '');
 $selectedId = (int)($_GET['student_id'] ?? 0);
 $students = [];
+require_once __DIR__ . '/includes/pagination.php';
 if ($term !== '') {
   $like = '%' . $term . '%';
-  $q = $pdo->prepare('SELECT s.id,s.student_no,s.class_level,s.active,u.full_name,u.username FROM students s JOIN users u ON u.id=s.user_id WHERE s.student_no LIKE ? OR s.class_level LIKE ? OR u.full_name LIKE ? OR u.username LIKE ? ORDER BY u.full_name LIMIT 100');
-  $q->execute([$like, $like, $like, $like]);
+  $searchWhere = ' WHERE s.student_no LIKE ? OR s.class_level LIKE ? OR u.full_name LIKE ? OR u.username LIKE ?';
+  $searchParams = [$like, $like, $like, $like];
+  $countQ = $pdo->prepare('SELECT COUNT(*) FROM students s JOIN users u ON u.id=s.user_id' . $searchWhere);
+  $countQ->execute($searchParams);
+  $searchPagination = pagination_state((int)$countQ->fetchColumn());
+  $q = $pdo->prepare('SELECT s.id,s.student_no,s.class_level,s.active,s.created_at,u.full_name,u.username FROM students s JOIN users u ON u.id=s.user_id' . $searchWhere . ' ORDER BY u.full_name LIMIT ' . $searchPagination['per_page'] . ' OFFSET ' . $searchPagination['offset']);
+  $q->execute($searchParams);
   $students = $q->fetchAll();
 } elseif ($selectedId) {
-  $q = $pdo->prepare('SELECT s.id,s.student_no,s.class_level,s.active,u.full_name,u.username FROM students s JOIN users u ON u.id=s.user_id WHERE s.id=?');
+  $q = $pdo->prepare('SELECT s.id,s.student_no,s.class_level,s.active,s.created_at,u.full_name,u.username FROM students s JOIN users u ON u.id=s.user_id WHERE s.id=?');
   $q->execute([$selectedId]);
   $one = $q->fetch();
   if ($one) $students = [$one];
@@ -28,7 +34,7 @@ if ($selectedId) {
     }
   }
   if (!$student) {
-    $q = $pdo->prepare('SELECT s.id,s.student_no,s.class_level,s.active,u.full_name,u.username FROM students s JOIN users u ON u.id=s.user_id WHERE s.id=?');
+    $q = $pdo->prepare('SELECT s.id,s.student_no,s.class_level,s.active,s.created_at,u.full_name,u.username FROM students s JOIN users u ON u.id=s.user_id WHERE s.id=?');
     $q->execute([$selectedId]);
     $student = $q->fetch() ?: null;
   }
@@ -53,7 +59,7 @@ if ($selectedId) {
     $fee = $q->fetch();
     if ($fee) {
       $paidRows = $pdo->prepare("SELECT billing_month,payment_type,status FROM payments WHERE student_id=? AND billing_month BETWEEN ? AND ? AND status IN ('paid','pending') ORDER BY created_at DESC");
-      $from = (new DateTime('first day of this month'))->modify('-23 months')->format('Y-m-01');
+      $from = (new DateTime($student['created_at']))->modify('first day of this month')->format('Y-m-01');
       $to = date('Y-m-01');
       $paidRows->execute([$selectedId, $from, $to]);
       $monthStatus = [];
@@ -83,6 +89,32 @@ if ($selectedId) {
         return strcmp($b['month'], $a['month']) ?: strcmp($a['type'], $b['type']);
       });
     }
+  }
+}
+$actualUnpaid = array_values(array_filter($dueItems, static fn($d) => $d['status'] !== 'paid'));
+$unpaidTotal = array_sum(array_map(static fn($d) => (float)$d['amount'], $actualUnpaid));
+$unpaidMonths = count(array_unique(array_column($actualUnpaid, 'month')));
+$studentPrediction = null;
+$predictionMessage = 'Data belum mencukupi untuk prediksi';
+if ($student) {
+  require_once __DIR__ . '/ml_engine.php';
+  $ml = spp_load_prediction_data($pdo, 18);
+  $samples = $ml['samples'];
+  $monthsUnique = array_values(array_unique(array_column($samples, 'month')));
+  sort($monthsUnique);
+  $cut = max(1, (int)floor(count($monthsUnique) * .8));
+  $cutMonth = $monthsUnique[$cut] ?? null;
+  $train = $cutMonth === null ? [] : array_values(array_filter($samples, static fn($r) => $r['month'] < $cutMonth));
+  $test = $cutMonth === null ? [] : array_values(array_filter($samples, static fn($r) => $r['month'] >= $cutMonth));
+  $classes = array_unique(array_map(static fn($r) => (int)$r['target'], $train));
+  $prev = array_slice($ml['months'], -3);
+  $sid = (int)$student['id'];
+  $createdMonth = (new DateTimeImmutable($student['created_at']))->modify('first day of this month')->format('Y-m-01');
+  if (count($samples) >= 20 && count($classes) >= 2 && $test && $prev && $prev[0] >= $createdMonth) {
+    $tree = spp_train_tree($samples, ['unpaid_prev1', 'unpaid_prev2', 'unpaid_prev3', 'unpaid_count_3', 'unpaid_streak'], 0, 3);
+    $h = [];
+    foreach ($prev as $m) $h[] = 1 - (int)($ml['history'][$sid][$m] ?? 0);
+    $studentPrediction = ['result' => spp_tree_predict($tree, spp_make_features($h)), 'features' => spp_make_features($h), 'months' => $prev];
   }
 }
 require __DIR__ . '/includes/header.php'; ?>
@@ -117,7 +149,7 @@ require __DIR__ . '/includes/header.php'; ?>
               <td colspan="6" class="empty">Santri tidak ditemukan.</td>
             </tr><?php endif; ?></tbody>
       </table>
-    </div><?php endif; ?>
+    </div><?php render_pagination($searchPagination, ['q' => $term, 'per_page' => $searchPagination['per_page']]); ?><?php endif; ?>
 </section>
 <?php if ($student): ?><section class="card" style="margin-top:20px">
     <div class="section-head">
@@ -129,27 +161,48 @@ require __DIR__ . '/includes/header.php'; ?>
     <div class="grid three-col" style="margin-bottom:18px">
       <div class="stat-card"><span>Total transaksi lunas </span><strong><?= (int)$summary['paid'] ?></strong><small> <?= rupiah($summary['paid_total']) ?></small></div>
       <div class="stat-card"><span>Menunggu pembayaran </span><strong><?= (int)$summary['pending'] ?></strong><small> <?= rupiah($summary['due_total']) ?></small></div>
-      <div class="stat-card"><span>Transaksi status lain </span><strong><?= (int)$summary['other'] ?></strong><small> Ditolak, gagal, atau kedaluwarsa</small></div>
+      <div class="stat-card"><span>Total tunggakan aktual</span><strong><?= rupiah($unpaidTotal) ?></strong><small><?= $unpaidMonths ?> bulan · <?= count($actualUnpaid) ?> tagihan belum lunas</small></div>
     </div>
     <section class="card" style="margin:0 0 20px">
       <div class="section-head">
         <div>
+          <h2>Hasil prediksi tunggakan</h2>
+          <p>Decision Tree · berdasarkan riwayat pembayaran tiga bulan terakhir, terhubung melalui ID santri.</p>
+        </div>
+      </div>
+      <?php if (!$studentPrediction): ?><p class="help">Data belum mencukupi untuk prediksi. Model membutuhkan data historis yang cukup dan tiga bulan riwayat santri ini.</p>
+      <?php else: $r = $studentPrediction['result'];
+        $risk = $r['positive_ratio'] >= .65 ? 'Risiko Tinggi' : ($r['positive_ratio'] >= .35 ? 'Risiko Sedang' : 'Risiko Rendah');
+        $reco = $risk === 'Risiko Tinggi' ? 'Prioritaskan pengingat personal dan verifikasi status pembayaran.' : ($risk === 'Risiko Sedang' ? 'Pantau pembayaran dan kirim pengingat sebelum jatuh tempo.' : 'Lanjutkan pemantauan rutin dan pengingat berkala.'); ?>
+        <div class="grid three-col">
+          <div class="stat-card"><span>Tingkat risiko</span><strong><?= e($risk) ?></strong><small>Hasil kelas Decision Tree</small></div>
+          <div class="stat-card"><span>Indikasi kelompok model</span><strong><?= number_format($r['positive_ratio'] * 100, 1) ?>%</strong><small><?= (int)$r['leaf_total'] ?> sampel pada kelompok keputusan · bukan probabilitas terkalibrasi</small></div>
+          <div class="stat-card"><span>Tunggakan 3 bulan</span><strong><?= (int)$studentPrediction['features']['unpaid_count_3'] ?> dari 3 bulan</strong><small>Riwayat: <?= e(implode(', ', array_map('month_label', $studentPrediction['months']))) ?></small></div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px"><?php foreach ($studentPrediction['months'] as $i => $m): $featureKey = ['unpaid_prev3', 'unpaid_prev2', 'unpaid_prev1'][$i];
+                                                                            $isUnpaid = (int)$studentPrediction['features'][$featureKey] === 1; ?><span class="badge <?= $isUnpaid ? 'pending' : 'paid' ?>"><?= e(month_label($m)) ?> · <?= $isUnpaid ? 'Belum lunas' : 'Lunas' ?></span><?php endforeach; ?></div>
+        <p class="help" style="margin-top:12px"><strong>Rekomendasi:</strong> <?= e($reco) ?> Prediksi adalah indikasi, bukan tunggakan aktual atau kepastian.</p>
+      <?php endif; ?>
+    </section>
+    <section class="card" style="margin:0 0 20px">
+      <div class="section-head">
+        <div>
           <h2>Rincian tunggakan per bulan</h2>
-          <p>SPP dan biaya jenjang dihitung terpisah. Daftar mencakup 24 bulan terakhir sampai bulan berjalan, termasuk bulan yang belum pernah dibuatkan transaksi.</p>
+          <p>SPP dan biaya jenjang dihitung terpisah. Daftar mencakup seluruh periode sejak santri terdaftar sampai bulan berjalan, termasuk bulan yang belum pernah dibuatkan transaksi.</p>
         </div>
       </div>
       <div class="month-grid payment-month-grid admin-billing-month-grid">
         <?php foreach ($dueItems as $d):
           $isSpp = $d['type'] === 'spp';
           $statusText = $d['status'] === 'paid' ? '✓ Sudah lunas' : ($d['status'] === 'pending' ? '◷ Menunggu verifikasi' : 'Tertunggak');
-          $cardClass = $d['status'] === 'unpaid' ? 'is-unpaid' : 'is-disabled';
+          $cardClass = $d['status'] === 'paid' ? 'is-disabled' : 'is-unpaid';
         ?>
           <div class="billing-card <?= $cardClass ?>" data-type="<?= e($d['type']) ?>" aria-label="<?= e(month_label($d['month']) . ' - ' . $d['label'] . ' - ' . $statusText) ?>">
             <span class="billing-card-icon"><?= $isSpp ? '▦' : '◇' ?></span>
             <span class="billing-card-copy">
               <strong><?= e(month_label($d['month'])) ?> · <?= e($isSpp ? 'SPP Pondok' : 'SPP (' . $student['class_level'] . ')') ?></strong>
               <small><?= rupiah($d['amount']) ?><?= $isSpp ? ' / bulan' : '' ?></small>
-              <small><?= e($statusText) ?></small>
+              <small><?= $d['status'] === 'paid' ? e($statusText) : '<span class="badge overdue">' . e($statusText) . '</span>' ?></small>
             </span>
           </div>
         <?php endforeach; ?>

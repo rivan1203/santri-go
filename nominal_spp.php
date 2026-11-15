@@ -15,7 +15,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     flash('Nominal SPP berhasil diperbarui.');
     redirect('nominal_spp.php');
 }
-$rows = $pdo->query('SELECT id,name,spp_amount,amount,active FROM fee_categories ORDER BY name')->fetchAll();
+require_once __DIR__ . '/includes/pagination.php';
+$count=(int)$pdo->query('SELECT COUNT(*) FROM fee_categories')->fetchColumn();$pagination=pagination_state($count);
+$rowsQ=$pdo->query('SELECT id,name,spp_amount,amount,active FROM fee_categories ORDER BY name LIMIT '.$pagination['per_page'].' OFFSET '.$pagination['offset']);$rows=$rowsQ->fetchAll();
 require __DIR__ . '/includes/header.php'; ?>
 <section class="card">
     <div class="section-head">
@@ -50,5 +52,6 @@ require __DIR__ . '/includes/header.php'; ?>
                     </tr><?php endif; ?></tbody>
         </table>
     </div>
+    <?php render_pagination($pagination, ['per_page'=>$pagination['per_page']]); ?>
     <p class="help" style="margin-top:14px">Catatan: nominal SPP yang sudah tercatat pada transaksi sebelumnya tidak ikut berubah.</p>
 </section><?php require __DIR__ . '/includes/footer.php'; ?>

@@ -2,97 +2,148 @@
 require __DIR__ . '/config.php';
 require_role('admin');
 $pageTitle = 'Pembayaran & Laporan';
+require_once __DIR__ . '/includes/pagination.php';
+
+$statusFilter = (string)($_GET['status'] ?? 'all');
+if (!in_array($statusFilter, ['all','pending','paid','rejected','failed','expire'], true)) $statusFilter = 'all';
+$from = trim((string)($_GET['from'] ?? ''));
+$to = trim((string)($_GET['to'] ?? ''));
+$monthFilter = trim((string)($_GET['month'] ?? ''));
+if ($monthFilter !== '' && !preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $monthFilter)) $monthFilter = '';
+$classFilter = trim((string)($_GET['class'] ?? ''));
+$nameFilter = trim((string)($_GET['q'] ?? ''));
+$validDate = static function ($value) { $d = DateTime::createFromFormat('!Y-m-d', (string)$value); return $d && $d->format('Y-m-d') === $value; };
+if (($from !== '' && !$validDate($from)) || ($to !== '' && !$validDate($to)) || ($from !== '' && $to !== '' && $from > $to)) { $from = ''; $to = ''; }
+$baseParts = []; $baseParams = [];
+if ($from !== '') { $baseParts[] = 'DATE(p.created_at) >= ?'; $baseParams[] = $from; }
+if ($to !== '') { $baseParts[] = 'DATE(p.created_at) <= ?'; $baseParams[] = $to; }
+if ($monthFilter !== '') { $baseParts[] = "DATE_FORMAT(p.billing_month, '%Y-%m') = ?"; $baseParams[] = $monthFilter; }
+if ($classFilter !== '') { $baseParts[] = 's.class_level = ?'; $baseParams[] = $classFilter; }
+if ($nameFilter !== '') { $baseParts[] = '(u.full_name LIKE ? OR s.student_no LIKE ? OR p.order_id LIKE ?)'; $needle = '%' . $nameFilter . '%'; array_push($baseParams, $needle, $needle, $needle); }
+$bulkFilterAllowed = ($statusFilter === 'all' || $statusFilter === 'pending');
+$baseWhere = $baseParts ? ('WHERE ' . implode(' AND ', $baseParts)) : '';
+$whereParts = $baseParts; $params = $baseParams;
+if ($statusFilter !== 'all') { $whereParts[] = 'p.status = ?'; $params[] = $statusFilter; }
+$where = $whereParts ? ('WHERE ' . implode(' AND ', $whereParts)) : '';
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_check();
-    $id = (int)($_POST['id'] ?? 0);
-    $action = $_POST['action'] ?? '';
+    $action = (string)($_POST['action'] ?? '');
     if ($action === 'cash_add') {
         $studentId = (int)($_POST['student_id'] ?? 0);
         $month = (string)($_POST['billing_month'] ?? '');
         if (preg_match('/^\d{4}-\d{2}$/', $month)) $month .= '-01';
         $type = (string)($_POST['payment_type'] ?? 'spp');
         $q = $pdo->prepare('SELECT s.id,s.class_level,fc.id category_id,fc.amount,fc.spp_amount FROM students s JOIN fee_categories fc ON fc.name=s.class_level AND fc.active=1 WHERE s.id=? AND s.active=1');
-        $q->execute([$studentId]);
-        $st = $q->fetch();
+        $q->execute([$studentId]); $st = $q->fetch();
         $dt = DateTime::createFromFormat('!Y-m-d', $month);
         if (!$st || !$dt || $dt->format('Y-m-d') !== $month || $month > date('Y-m-01') || !in_array($type, ['spp', 'jenjang', 'combined'], true)) {
-            flash('Data pembayaran tunai tidak valid.', 'error');
-            redirect('payments.php');
+            flash('Data pembayaran tunai tidak valid.', 'error'); redirect('payments.php');
         }
         $amtSpp = in_array($type, ['spp', 'combined'], true) ? (float)$st['spp_amount'] : 0;
         $amtJenjang = in_array($type, ['jenjang', 'combined'], true) ? (float)$st['amount'] : 0;
         $total = $amtSpp + $amtJenjang;
         $check = $pdo->prepare("SELECT COUNT(*) FROM payments WHERE student_id=? AND billing_month=? AND status IN ('paid','pending') AND (payment_type=? OR payment_type='combined' OR ?='combined')");
         $check->execute([$studentId, $month, $type, $type]);
-        if ($total <= 0 || (int)$check->fetchColumn() > 0) {
-            flash('Nominal belum diatur atau tagihan periode tersebut sudah diproses.', 'error');
-            redirect('payments.php');
-        }
+        if ($total <= 0 || (int)$check->fetchColumn() > 0) { flash('Nominal belum diatur atau tagihan periode tersebut sudah diproses.', 'error'); redirect('payments.php'); }
         $order = 'CASH-' . date('YmdHis') . '-' . bin2hex(random_bytes(3));
         $q = $pdo->prepare("INSERT INTO payments(order_id,student_id,fee_category_id,billing_month,payment_type,category_amount,spp_amount,total_amount,method,status,notes,verified_by,verified_at) VALUES(?,?,?,?,?,?,?,?, 'cash','paid',?,?,NOW())");
         $q->execute([$order, $studentId, $st['category_id'], $month, $type, $amtJenjang, $amtSpp, $total, trim($_POST['notes'] ?? 'Pembayaran tunai diterima admin'), $_SESSION['user']['id']]);
-        flash('Pembayaran tunai berhasil dicatat dan langsung berstatus lunas.');
-        redirect('payments.php');
+        flash('Pembayaran tunai berhasil dicatat dan langsung berstatus lunas.'); redirect('payments.php');
     }
+
     if (in_array($action, ['approve', 'reject'], true)) {
-        $rejectReason = trim((string)($_POST['notes'] ?? ''));
+        $id = (int)($_POST['id'] ?? 0); $rejectReason = trim((string)($_POST['notes'] ?? ''));
         if ($action === 'reject' && $rejectReason === '') { flash('Isi alasan penolakan sebelum menolak pembayaran.', 'error'); redirect('payments.php'); }
-        $status = $action === 'approve' ? 'paid' : 'rejected';
-        $q = $pdo->prepare("SELECT * FROM payments WHERE id=? AND method IN ('cash','bank_transfer') AND status='pending'");
-        $q->execute([$id]);
-        $p = $q->fetch();
-        if (!$p) {
-            flash('Transaksi tidak ditemukan atau sudah diproses.', 'error');
-            redirect('payments.php');
-        }
-        if ($status === 'paid') {
-            // Tolak hanya jika tagihan yang sama sudah lunas. SPP Pondok dan biaya jenjang
-            // pada bulan yang sama adalah dua tagihan berbeda dan boleh diverifikasi terpisah.
-            $q = $pdo->prepare("SELECT COUNT(*) FROM payments WHERE student_id=? AND billing_month=? AND status='paid' AND (payment_type=? OR payment_type='combined' OR ?='combined')");
-            $q->execute([$p['student_id'], $p['billing_month'], $p['payment_type'], $p['payment_type']]);
-            if ((int)$q->fetchColumn() > 0) {
-                flash('Jenis tagihan ini sudah lunas melalui transaksi lain. Periksa riwayat transaksi sebelum menyetujui.', 'error');
-                redirect('payments.php');
-            }
-        }
-        $q = $pdo->prepare('UPDATE payments SET status=?,verified_by=?,verified_at=NOW(),notes=? WHERE id=? AND status=\'pending\'');
+        $newStatus = $action === 'approve' ? 'paid' : 'rejected';
         $verifierId = (int)($_SESSION['user']['id'] ?? 0);
-        if ($verifierId <= 0) { flash('Sesi pengguna tidak valid. Silakan masuk kembali.', 'error'); redirect('login.php'); }
-        $q->execute([$status, $verifierId, trim($_POST['notes'] ?? ''), $id]);
-        flash($status === 'paid' ? 'Pembayaran berhasil diverifikasi lunas.' : 'Pembayaran ditolak.', 'success');
+        if ($verifierId <= 0) { flash('Sesi pengguna tidak valid.', 'error'); redirect('login.php'); }
+        try {
+            $pdo->beginTransaction();
+            $q = $pdo->prepare("SELECT * FROM payments WHERE id=? AND method IN ('cash','bank_transfer') AND status='pending' FOR UPDATE");
+            $q->execute([$id]); $payment = $q->fetch();
+            if (!$payment) throw new RuntimeException('Transaksi tidak ditemukan atau sudah diproses.');
+            if ($newStatus === 'paid') {
+                $q = $pdo->prepare("SELECT COUNT(*) FROM payments WHERE student_id=? AND billing_month=? AND status='paid' AND (payment_type=? OR payment_type='combined' OR ?='combined')");
+                $q->execute([$payment['student_id'], $payment['billing_month'], $payment['payment_type'], $payment['payment_type']]);
+                if ((int)$q->fetchColumn() > 0) throw new RuntimeException('Jenis tagihan ini sudah lunas melalui transaksi lain.');
+            }
+            $q = $pdo->prepare("UPDATE payments SET status=?,verified_by=?,verified_at=NOW(),notes=? WHERE id=? AND status='pending'");
+            $q->execute([$newStatus, $verifierId, $newStatus === 'rejected' ? $rejectReason : (string)($payment['notes'] ?? ''), $id]);
+            if ($q->rowCount() !== 1) throw new RuntimeException('Status transaksi berubah. Muat ulang halaman.');
+            $pdo->commit(); flash($newStatus === 'paid' ? 'Pembayaran berhasil diverifikasi lunas.' : 'Pembayaran ditolak.');
+        } catch (Throwable $e) { if ($pdo->inTransaction()) $pdo->rollBack(); flash($e instanceof RuntimeException ? $e->getMessage() : 'Gagal memproses transaksi.', 'error'); }
+        redirect('payments.php?' . http_build_query(['from'=>$from,'to'=>$to,'month'=>$monthFilter,'class'=>$classFilter,'q'=>$nameFilter,'status'=>$statusFilter,'page'=>(int)($_GET['page'] ?? 1)]));
     }
-    redirect('payments.php');
+
+    if (in_array($action, ['bulk_approve','bulk_reject'], true)) {
+        $reason = trim((string)($_POST['bulk_reason'] ?? ''));
+        if (!$bulkFilterAllowed) { flash('Filter status saat ini tidak memuat transaksi pending.', 'warning'); redirect('payments.php'); }
+        if ($action === 'bulk_reject' && $reason === '') { flash('Alasan penolakan massal wajib diisi.', 'error'); redirect('payments.php'); }
+        $scope = (string)($_POST['selection_scope'] ?? 'selected');
+        $ids = array_values(array_unique(array_filter(array_map('intval', (array)($_POST['selected_ids'] ?? [])), static fn($v) => $v > 0)));
+        $newStatus = $action === 'bulk_approve' ? 'paid' : 'rejected';
+        $adminId = (int)($_SESSION['user']['id'] ?? 0);
+        if ($adminId <= 0) { flash('Sesi admin tidak valid.', 'error'); redirect('login.php'); }
+        try {
+            $pdo->beginTransaction();
+            if ($scope === 'filtered') {
+                $sqlIds = "SELECT p.id FROM payments p LEFT JOIN students s ON s.id=p.student_id LEFT JOIN users u ON u.id=s.user_id $baseWhere " . ($baseWhere ? " AND " : " WHERE ") . "p.status='pending' AND p.method IN ('cash','bank_transfer') ORDER BY p.id FOR UPDATE";
+                $stmt = $pdo->prepare($sqlIds); $stmt->execute($baseParams); $ids = array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+            }
+            $succeeded = 0; $failed = 0; $failReasons = [];
+            if (!$ids) throw new RuntimeException('Tidak ada transaksi pending yang memenuhi kriteria.');
+            $selectedFilterSql = "SELECT p.* FROM payments p LEFT JOIN students s ON s.id=p.student_id LEFT JOIN users u ON u.id=s.user_id " . $baseWhere . ($baseWhere ? " AND " : " WHERE ") . "p.id=? AND p.status='pending' AND p.method IN ('cash','bank_transfer') FOR UPDATE";
+            $select = $pdo->prepare($selectedFilterSql);
+            $duplicate = $pdo->prepare("SELECT COUNT(*) FROM payments WHERE student_id=? AND billing_month=? AND status='paid' AND (payment_type=? OR payment_type='combined' OR ?='combined')");
+            $update = $pdo->prepare("UPDATE payments SET status=?,verified_by=?,verified_at=NOW(),notes=? WHERE id=? AND status='pending' AND method IN ('cash','bank_transfer')");
+            foreach ($ids as $paymentId) {
+                $select->execute(array_merge($baseParams, [$paymentId])); $payment = $select->fetch();
+                if (!$payment) { $failed++; continue; }
+                if ($newStatus === 'paid') {
+                    $duplicate->execute([$payment['student_id'], $payment['billing_month'], $payment['payment_type'], $payment['payment_type']]);
+                    if ((int)$duplicate->fetchColumn() > 0) { $failed++; $failReasons[] = 'Ada tagihan yang sudah lunas sebelumnya'; continue; }
+                }
+                $note = $newStatus === 'rejected' ? $reason : (string)($payment['notes'] ?? '');
+                $update->execute([$newStatus, $adminId, $note, $paymentId]);
+                if ($update->rowCount() === 1) $succeeded++; else $failed++;
+            }
+            $pdo->commit();
+            flash(($newStatus === 'paid' ? 'Verifikasi' : 'Penolakan') . " massal selesai: $succeeded berhasil, $failed gagal diproses." . ($failReasons ? ' Sebagian dilewati karena tagihan sudah lunas.' : ''));
+        } catch (Throwable $e) { if ($pdo->inTransaction()) $pdo->rollBack(); flash($e instanceof RuntimeException ? $e->getMessage() : 'Proses massal gagal dan seluruh perubahan dibatalkan.', 'error'); }
+        redirect('payments.php?' . http_build_query(['from'=>$from,'to'=>$to,'month'=>$monthFilter,'class'=>$classFilter,'q'=>$nameFilter,'status'=>$statusFilter]));
+    }
+    flash('Aksi tidak dikenali.', 'error'); redirect('payments.php');
 }
-$statusFilter = (string)($_GET['status'] ?? 'all');
-if (!in_array($statusFilter, ['all','pending','paid','rejected','failed','expire'], true)) $statusFilter = 'all';
-$from = trim((string)($_GET['from'] ?? ''));
-$to = trim((string)($_GET['to'] ?? ''));
-$validDate = static function ($value) { $d = DateTime::createFromFormat('!Y-m-d', (string)$value); return $d && $d->format('Y-m-d') === $value; };
-if (($from !== '' && !$validDate($from)) || ($to !== '' && !$validDate($to)) || ($from !== '' && $to !== '' && $from > $to)) { $from = ''; $to = ''; }
-$whereParts = []; $params = [];
-if ($from !== '') { $whereParts[] = 'DATE(p.created_at) >= ?'; $params[] = $from; }
-if ($to !== '') { $whereParts[] = 'DATE(p.created_at) <= ?'; $params[] = $to; }
-if ($statusFilter !== 'all') { $whereParts[] = 'p.status = ?'; $params[] = $statusFilter; }
-$where = $whereParts ? ('WHERE ' . implode(' AND ', $whereParts)) : '';
-// Semua transaksi ditampilkan tanpa filter tanggal otomatis; pagination membatasi tampilan per halaman.
-$countStmt = $pdo->prepare("SELECT COUNT(*) FROM payments p $where");
+
+$countStmt = $pdo->prepare("SELECT COUNT(*) FROM payments p LEFT JOIN students s ON s.id=p.student_id LEFT JOIN users u ON u.id=s.user_id $where");
 $countStmt->execute($params); $totalRows = (int)$countStmt->fetchColumn();
-$perPage = (int)($_GET['per_page'] ?? 10); if (!in_array($perPage, [10, 50, 100], true)) $perPage = 10;
-$totalPages = max(1, (int)ceil($totalRows / $perPage));
-$page = max(1, (int)($_GET['page'] ?? 1)); $page = min($page, $totalPages); $offset = ($page - 1) * $perPage;
-$sql = "SELECT p.*,u.full_name,s.student_no,fc.name category,vu.full_name AS verifier_name FROM payments p LEFT JOIN students s ON s.id=p.student_id LEFT JOIN users u ON u.id=s.user_id LEFT JOIN fee_categories fc ON fc.id=p.fee_category_id LEFT JOIN users vu ON vu.id=p.verified_by $where ORDER BY p.created_at DESC, p.id DESC LIMIT $perPage OFFSET $offset";
+$pagination = pagination_state($totalRows); $perPage=$pagination['per_page']; $totalPages=$pagination['pages']; $page=$pagination['page']; $offset=$pagination['offset'];
+$sql = "SELECT p.*,u.full_name,s.student_no,s.class_level,fc.name category,vu.full_name AS verifier_name FROM payments p LEFT JOIN students s ON s.id=p.student_id LEFT JOIN users u ON u.id=s.user_id LEFT JOIN fee_categories fc ON fc.id=p.fee_category_id LEFT JOIN users vu ON vu.id=p.verified_by $where ORDER BY p.created_at DESC, p.id DESC LIMIT $perPage OFFSET $offset";
 $q = $pdo->prepare($sql); $q->execute($params); $rows = $q->fetchAll();
+$pendingSql = "SELECT COUNT(*) FROM payments p LEFT JOIN students s ON s.id=p.student_id LEFT JOIN users u ON u.id=s.user_id $baseWhere " . ($baseWhere ? " AND " : " WHERE ") . "p.status='pending' AND p.method IN ('cash','bank_transfer')";
+$pendingStmt=$pdo->prepare($pendingSql); $pendingStmt->execute($baseParams); $filteredPendingCount=$bulkFilterAllowed ? (int)$pendingStmt->fetchColumn() : 0;
+$classOptions=$pdo->query("SELECT DISTINCT class_level FROM students WHERE class_level<>'' ORDER BY class_level")->fetchAll(PDO::FETCH_COLUMN);
 $cashStudents = $pdo->query("SELECT s.id,s.student_no,s.class_level,u.full_name FROM students s JOIN users u ON u.id=s.user_id WHERE s.active=1 ORDER BY u.full_name")->fetchAll();
 $cashLevels = $pdo->query('SELECT id,name,amount,spp_amount FROM fee_categories WHERE active=1 ORDER BY name')->fetchAll();
 require __DIR__ . '/includes/header.php';
 ?>
 <?php
 $periodLabel = ($from || $to) ? (($from ? date('d/m/Y', strtotime($from)) : 'Awal') . ' — ' . ($to ? date('d/m/Y', strtotime($to)) : 'Sekarang')) : 'Semua tanggal';
-$paidCount = 0; $paidAmount = 0; $totalAmount = 0;
-foreach ($rows as $statRow) { $totalAmount += (float)$statRow['total_amount']; if ($statRow['status'] === 'paid') { $paidCount++; $paidAmount += (float)$statRow['total_amount']; } }
+// Ringkasan dihitung dari seluruh transaksi sesuai filter aktif, bukan hanya baris di halaman ini.
+$summaryStmt = $pdo->prepare("SELECT COUNT(*) AS transaction_count,
+    COALESCE(SUM(p.total_amount),0) AS total_amount,
+    COALESCE(SUM(CASE WHEN p.status='paid' THEN 1 ELSE 0 END),0) AS paid_count,
+    COALESCE(SUM(CASE WHEN p.status='paid' THEN p.total_amount ELSE 0 END),0) AS paid_amount
+    FROM payments p LEFT JOIN students s ON s.id=p.student_id LEFT JOIN users u ON u.id=s.user_id $where");
+$summaryStmt->execute($params);
+$summary = $summaryStmt->fetch() ?: [];
+$totalAmount = (float)($summary['total_amount'] ?? 0);
+$paidCount = (int)($summary['paid_count'] ?? 0);
+$paidAmount = (float)($summary['paid_amount'] ?? 0);
 ?>
 <div class="report-print-head"><div class="report-brand"><div class="report-logo"><?php if (app_school_logo_url()): ?><img src="<?= e(app_school_logo_url()) ?>" alt="Logo <?= e(app_school_name()) ?>"><?php else: ?><?= e(app_school_mark()) ?><?php endif; ?></div><div><h2><?= e(strtoupper(app_school_name())) ?></h2><p>Administrasi Pembayaran Santri</p></div></div><div class="report-period"><small>PERIODE TRANSAKSI</small><strong><?= e($periodLabel) ?></strong><span><?= e($statusFilter === 'all' ? 'Semua status' : ucfirst($statusFilter)) ?></span></div></div>
-<div class="report-stats"><div class="report-stat"><small>JUMLAH TRANSAKSI</small><strong><?= $totalRows ?></strong><span>Seluruh hasil filter</span></div><div class="report-stat"><small>NOMINAL DI HALAMAN</small><strong><?= rupiah($totalAmount) ?></strong><span>Transaksi yang ditampilkan</span></div><div class="report-stat"><small>TRANSAKSI LUNAS</small><strong><?= $paidCount ?></strong><span>Di halaman ini</span></div><div class="report-stat"><small>NOMINAL LUNAS</small><strong><?= rupiah($paidAmount) ?></strong><span>Di halaman ini</span></div></div>
+<div class="report-stats"><div class="report-stat"><small>JUMLAH TRANSAKSI</small><strong><?= $totalRows ?></strong><span>Seluruh hasil filter</span></div><div class="report-stat"><small>NOMINAL SELURUH TRANSAKSI</small><strong><?= rupiah($totalAmount) ?></strong><span>Seluruh transaksi sesuai filter</span></div><div class="report-stat"><small>TRANSAKSI LUNAS</small><strong><?= $paidCount ?></strong><span>Seluruh transaksi sesuai filter</span></div><div class="report-stat"><small>NOMINAL LUNAS</small><strong><?= rupiah($paidAmount) ?></strong><span>Akumulasi seluruh transaksi lunas</span></div></div>
 <section class="card report-table-card">
     <div class="section-head">
         <div>
@@ -103,15 +154,38 @@ foreach ($rows as $statRow) { $totalAmount += (float)$statRow['total_amount']; i
     <form method="get" id="paymentFilter" class="report-filter" style="display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin-bottom:16px">
         <div class="form-group"><label>Dari tanggal</label><input class="input" type="date" name="from" value="<?= e($from) ?>"></div>
         <div class="form-group"><label>Sampai tanggal</label><input class="input" type="date" name="to" value="<?= e($to) ?>"></div>
+        <div class="form-group"><label>Bulan tagihan</label><input class="input" type="month" name="month" value="<?= e($monthFilter) ?>"></div>
+        <div class="form-group"><label>Kelas</label><select name="class"><option value="">Semua kelas</option><?php foreach ($classOptions as $level): ?><option value="<?= e((string)$level) ?>" <?= $classFilter === (string)$level ? 'selected' : '' ?>><?= e((string)$level) ?></option><?php endforeach; ?></select></div>
+        <div class="form-group"><label>Cari santri / nomor / order</label><input class="input" type="search" name="q" value="<?= e($nameFilter) ?>" placeholder="Nama atau nomor induk"></div>
         <div class="form-group"><label>Status</label><select name="status" id="paymentStatus">
                 <option value="all">Semua status</option><?php foreach (['pending' => 'Menunggu verifikasi', 'paid' => 'Lunas', 'rejected' => 'Ditolak', 'failed' => 'Gagal', 'expire' => 'Kedaluwarsa'] as $k => $v): ?><option value="<?= e($k) ?>" <?= $statusFilter === $k ? 'selected' : '' ?>><?= e($v) ?></option><?php endforeach; ?>
             </select></div>
+        <div class="form-group"><button class="btn btn-light" type="submit">Terapkan Filter</button></div>
     </form>
+    <div class="bulk-toolbar no-print">
+      <div class="bulk-toolbar-top">
+        <div><strong>Kelola transaksi terpilih</strong><span class="pending-count"><?= number_format($filteredPendingCount) ?> pending</span><small>Proses hanya transaksi pending yang dipilih. Pilihan semua hasil filter mencakup seluruh halaman.</small></div>
+        <div class="bulk-actions">
+          <button type="button" class="btn btn-success btn-small" id="bulkApproveButton" <?= $filteredPendingCount ? '' : 'disabled' ?>>Verifikasi</button>
+          <button type="button" class="btn btn-danger btn-small" id="bulkRejectButton" <?= $filteredPendingCount ? '' : 'disabled' ?>>Tolak</button>
+        </div>
+      </div>
+      <form method="post" id="bulkForm">
+        <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
+        <input type="hidden" name="selection_scope" id="selectionScope" value="selected">
+        <div id="bulkHiddenIds"></div><input type="hidden" name="bulk_reason" id="bulkReason"><input type="hidden" name="action" id="bulkAction">
+        <div class="bulk-selection-row">
+          <label><input type="checkbox" id="selectPage"> Pilih halaman ini</label>
+          <button type="button" class="btn btn-light btn-small" id="selectAllFiltered" <?= $filteredPendingCount ? '' : 'disabled' ?>>Pilih semua hasil filter (<?= number_format($filteredPendingCount) ?>)</button>
+          <span id="selectedCount">0 transaksi dipilih</span>
+        </div>
+      </form>
+    </div>
     <div class="table-wrap">
         <table class="report-table payment-report-table">
             <thead>
                 <tr>
-                    <th>Santri / Order</th>
+                    <th class="no-print">Pilih</th><th>Santri / Order</th>
                     <th>Periode</th>
                     <th>Metode</th>
                     <th>Total</th>
@@ -123,6 +197,7 @@ foreach ($rows as $statRow) { $totalAmount += (float)$statRow['total_amount']; i
             </thead>
             <tbody>
                 <?php foreach ($rows as $r): ?><tr>
+                        <td data-label="Pilih" class="no-print"><?php if ($r['status'] === 'pending'): ?><input type="checkbox" class="payment-select" value="<?= (int)$r['id'] ?>" aria-label="Pilih transaksi <?= e($r['order_id']) ?>"><?php else: ?><span class="help">—</span><?php endif; ?></td>
                         <td data-label="Santri / Order"><strong><?= e($r['full_name']) ?></strong>
                             <div class="help"><?= e($r['student_no']) ?> · <?= e($r['order_id']) ?></div>
                         </td>
@@ -135,15 +210,37 @@ foreach ($rows as $statRow) { $totalAmount += (float)$statRow['total_amount']; i
                         <td data-label="Kwitansi"><a class="btn btn-light btn-small" target="_blank" href="<?= APP_BASE ?>/receipt.php?id=<?= (int)$r['id'] ?>">Cetak kwitansi</a></td>
                     </tr><?php endforeach; ?>
                 <?php if (!$rows): ?><tr>
-                        <td colspan="8" class="empty">Belum ada transaksi pada filter ini.</td>
+                        <td colspan="9" class="empty">Belum ada transaksi pada filter ini.</td>
                     </tr><?php endif; ?>
             </tbody>
         </table>
     </div>
 </section>
-<div class="report-pagination no-print">
- <div class="page-size">Tampilkan <select id="paymentPerPage" aria-label="Jumlah transaksi per halaman"><option value="10" <?= $perPage===10?'selected':'' ?>>10</option><option value="50" <?= $perPage===50?'selected':'' ?>>50</option><option value="100" <?= $perPage===100?'selected':'' ?>>100</option></select> transaksi · <?= $totalRows ?> total</div>
- <div class="page-nav"><span>Halaman <?= $page ?> dari <?= $totalPages ?></span><?php $pageBase=['from'=>$from,'to'=>$to,'status'=>$statusFilter,'per_page'=>$perPage]; ?><a class="btn btn-light btn-small <?= $page<=1?'disabled':'' ?>" style="<?= $page<=1?'pointer-events:none;opacity:.45;':'' ?>" href="?<?= e(http_build_query($pageBase+['page'=>max(1,$page-1)])) ?>">‹ Sebelumnya</a><a class="btn btn-light btn-small <?= $page>=$totalPages?'disabled':'' ?>" style="<?= $page>=$totalPages?'pointer-events:none;opacity:.45;':'' ?>" href="?<?= e(http_build_query($pageBase+['page'=>min($totalPages,$page+1)])) ?>">Selanjutnya ›</a></div>
+<?php render_pagination($pagination, ['from'=>$from,'to'=>$to,'month'=>$monthFilter,'class'=>$classFilter,'q'=>$nameFilter,'status'=>$statusFilter,'per_page'=>$perPage]); ?>
+<style>
+.bulk-toolbar{margin:14px 0;padding:14px 16px;border:1px solid var(--line);border-radius:13px;background:#fbfcfe}
+.bulk-toolbar-top,.bulk-selection-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.bulk-toolbar-top strong{font-size:13px}.bulk-toolbar-top small{display:block;color:var(--muted);font-size:11px;margin-top:4px}
+.pending-count{display:inline-flex;margin-left:9px;padding:4px 8px;border-radius:20px;background:#fff4d8;color:#8a6200;font-size:11px;font-weight:800}
+.bulk-selection-row{margin-top:12px;padding-top:12px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
+.bulk-selection-row label{display:flex;align-items:center;gap:7px}.bulk-actions{display:flex;gap:7px;flex-wrap:wrap}
+.btn-danger{background:#c83d45!important;color:#fff!important;border-color:#c83d45!important}.btn-danger:hover{background:#a92e36!important}
+.btn-success{background:#16834a!important;color:#fff!important;border-color:#16834a!important}.btn-success:hover{background:#116b3c!important}
+.payment-select{width:16px;height:16px;accent-color:#16834a;cursor:pointer}
+.bulk-actions .btn:disabled,.bulk-selection-row .btn:disabled{opacity:.45;cursor:not-allowed}
+@media(max-width:640px){.bulk-toolbar{padding:12px}.bulk-toolbar-top{align-items:flex-start}.bulk-actions{width:100%}.bulk-actions .btn{flex:1}.bulk-selection-row{align-items:flex-start}.bulk-selection-row .bulk-actions{width:100%}}
+</style>
+<div class="proof-modal-backdrop" id="bulkRejectModal" aria-hidden="true">
+  <section class="proof-modal" role="dialog" aria-modal="true" aria-labelledby="bulkRejectTitle" style="width:min(520px,100%)">
+    <div class="proof-modal-head"><h2 id="bulkRejectTitle">Alasan Penolakan Transaksi</h2><button type="button" class="proof-close" id="bulkRejectClose" aria-label="Tutup">×</button></div>
+    <div style="padding:20px 22px;display:grid;gap:10px">
+      <p id="bulkRejectDescription" class="help" style="margin:0">Masukkan alasan penolakan untuk transaksi yang dipilih.</p>
+      <label for="bulkRejectReasonInput" style="font-weight:700;font-size:12px">Alasan penolakan <span style="color:#c83d45">*</span></label>
+      <textarea id="bulkRejectReasonInput" class="input" rows="4" maxlength="1000" placeholder="Contoh: Bukti transfer tidak sesuai atau tidak terbaca."></textarea>
+      <small class="help">Alasan ini akan disimpan pada setiap transaksi yang ditolak.</small>
+    </div>
+    <div class="proof-modal-actions"><button type="button" class="btn btn-light" id="bulkRejectCancel">Batal</button><button type="button" class="btn btn-danger" id="bulkRejectConfirm">Tolak Transaksi</button></div>
+  </section>
 </div>
 <div class="proof-modal-backdrop" id="adminProofModal" aria-hidden="true">
   <section class="proof-modal" role="dialog" aria-modal="true" aria-labelledby="adminProofTitle">
@@ -152,6 +249,66 @@ foreach ($rows as $statRow) { $totalAmount += (float)$statRow['total_amount']; i
     <div class="proof-modal-actions"><a class="btn" id="adminProofDownload" href="#" download>Unduh bukti</a><button class="btn btn-light" type="button" id="adminProofCloseBottom">Tutup</button></div>
   </section>
 </div>
+<script>
+(function(){
+ const form=document.getElementById('bulkForm'), hidden=document.getElementById('bulkHiddenIds');
+ const scope=document.getElementById('selectionScope'), action=document.getElementById('bulkAction'), reason=document.getElementById('bulkReason');
+ const checks=()=>Array.from(document.querySelectorAll('.payment-select'));
+ const selected=()=>checks().filter(x=>x.checked);
+ const count=document.getElementById('selectedCount'), pageToggle=document.getElementById('selectPage');
+ const filteredCount=<?= (int)$filteredPendingCount ?>;
+ const rejectModal=document.getElementById('bulkRejectModal');
+ const rejectInput=document.getElementById('bulkRejectReasonInput');
+ const rejectDescription=document.getElementById('bulkRejectDescription');
+ let allFiltered=false, submitting=false;
+ function refresh(){
+   const n=selected().length;
+   count.textContent=allFiltered?'Semua '+filteredCount+' transaksi pending sesuai filter dipilih':n+' transaksi dipilih';
+   pageToggle.checked=checks().length>0&&checks().every(x=>x.checked);
+   pageToggle.indeterminate=!pageToggle.checked&&n>0;
+ }
+ function targetCount(){return allFiltered?filteredCount:selected().length;}
+ function openRejectModal(){
+   if(submitting)return;
+   const n=targetCount();
+   if(n<1){showAppNotice('Data belum dipilih. Centang transaksi yang ingin ditolak terlebih dahulu.','error');return;}
+   rejectInput.value='';
+   rejectDescription.textContent='Anda akan menolak '+n+' transaksi pending. Masukkan alasan penolakan untuk seluruh transaksi tersebut.';
+   rejectModal.classList.add('is-open');rejectModal.setAttribute('aria-hidden','false');document.body.classList.add('modal-open');
+   window.setTimeout(()=>rejectInput.focus(),80);
+ }
+ function closeRejectModal(){rejectModal.classList.remove('is-open');rejectModal.setAttribute('aria-hidden','true');document.body.classList.remove('modal-open');}
+ function submitBulk(kind, why=''){
+   if(submitting)return;
+   const ids=selected().map(x=>x.value), n=targetCount();
+   if(n<1){showAppNotice('Data belum dipilih. Centang transaksi yang ingin diproses terlebih dahulu.','error');return;}
+   if(kind==='bulk_reject'&&!why.trim()){showAppNotice('Alasan penolakan wajib diisi.','error');return;}
+   submitting=true;
+   const approve=document.getElementById('bulkApproveButton'), reject=document.getElementById('bulkRejectButton');
+   approve.disabled=true;reject.disabled=true;
+   const active=kind==='bulk_approve'?approve:reject;
+   active.textContent=kind==='bulk_approve'?'Memverifikasi…':'Menolak…';
+   hidden.replaceChildren();
+   if(!allFiltered)ids.forEach(id=>{const input=document.createElement('input');input.type='hidden';input.name='selected_ids[]';input.value=id;hidden.appendChild(input);});
+   scope.value=allFiltered?'filtered':'selected';reason.value=why;action.value=kind;form.submit();
+ }
+ checks().forEach(x=>x.addEventListener('change',()=>{allFiltered=false;refresh();}));
+ pageToggle.addEventListener('change',()=>{allFiltered=false;checks().forEach(x=>x.checked=pageToggle.checked);refresh();});
+ document.getElementById('selectAllFiltered').addEventListener('click',()=>{allFiltered=true;checks().forEach(x=>x.checked=true);refresh();});
+ document.getElementById('bulkApproveButton').addEventListener('click',()=>submitBulk('bulk_approve'));
+ document.getElementById('bulkRejectButton').addEventListener('click',openRejectModal);
+ document.getElementById('bulkRejectConfirm').addEventListener('click',()=>{
+   const why=rejectInput.value.trim();
+   if(!why){showAppNotice('Alasan penolakan wajib diisi.','error');rejectInput.focus();return;}
+   closeRejectModal();submitBulk('bulk_reject',why);
+ });
+ document.getElementById('bulkRejectClose').addEventListener('click',closeRejectModal);
+ document.getElementById('bulkRejectCancel').addEventListener('click',closeRejectModal);
+ rejectModal.addEventListener('click',e=>{if(e.target===rejectModal)closeRejectModal();});
+ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&rejectModal.classList.contains('is-open'))closeRejectModal();});
+ refresh();
+})();
+</script>
 <script>
 (function(){
  const modal=document.getElementById('adminProofModal');

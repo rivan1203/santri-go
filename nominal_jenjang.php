@@ -41,7 +41,9 @@ if (isset($_GET['edit'])) {
     $q->execute([(int)$_GET['edit']]);
     $edit = $q->fetch() ?: null;
 }
-$rows = $pdo->query('SELECT * FROM fee_categories ORDER BY name')->fetchAll();
+$search=trim((string)($_GET['q']??''));$where=$search!==''?' WHERE name LIKE ? OR description LIKE ?':'';$params=$search!==''?['%'.$search.'%','%'.$search.'%']:[];
+require_once __DIR__.'/includes/pagination.php';$count=$pdo->prepare('SELECT COUNT(*) FROM fee_categories'.$where);$count->execute($params);$pagination=pagination_state((int)$count->fetchColumn());
+$list=$pdo->prepare('SELECT * FROM fee_categories'.$where.' ORDER BY name LIMIT '.$pagination['per_page'].' OFFSET '.$pagination['offset']);$list->execute($params);$rows=$list->fetchAll();
 require __DIR__ . '/includes/header.php'; ?>
 <section class="card">
     <div class="section-head">
@@ -50,7 +52,7 @@ require __DIR__ . '/includes/header.php'; ?>
             <p>Atur biaya jenjang tanpa mengubah tarif SPP bulanan.</p>
         </div><button class="btn" type="button" onclick="openLevelModal()">＋ Tambah jenjang</button>
     </div>
-    <div class="pill"><?= count($rows) ?> jenjang terdaftar</div>
+    <div class="pill"><?= number_format($pagination['total'],0,',','.') ?> jenjang terdaftar</div>
 </section>
 <div class="premium-modal-backdrop <?= $edit ? 'is-open' : '' ?>" id="levelModal" role="presentation" aria-hidden="<?= $edit ? 'false' : 'true' ?>">
     <section class="premium-modal method-modal-rich" role="dialog" aria-modal="true" aria-labelledby="levelModalTitle"><button class="premium-modal-close" type="button" onclick="closeLevelModal()" aria-label="Tutup">×</button>
@@ -71,8 +73,9 @@ require __DIR__ . '/includes/header.php'; ?>
         <div>
             <h2>Daftar nominal jenjang</h2>
             <p>Tarif jenjang yang digunakan pada tagihan baru.</p>
-        </div><input class="input" style="max-width:240px" placeholder="Cari jenjang..." oninput="filterRows(this.value,'level-table')">
+        </div>
     </div>
+    <form method="get" style="display:flex;gap:8px;margin:10px 0 16px;flex-wrap:wrap"><input type="hidden" name="per_page" value="<?= (int)$pagination['per_page'] ?>"><input class="input" name="q" value="<?= e($search) ?>" placeholder="Cari jenjang..." style="max-width:300px"><button class="btn" type="submit">Cari</button><a class="btn btn-light" href="<?= APP_BASE ?>/nominal_jenjang.php">Reset</a></form>
     <div class="table-wrap">
         <table id="level-table">
             <thead>
@@ -103,12 +106,8 @@ require __DIR__ . '/includes/header.php'; ?>
                     </tr><?php endif; ?></tbody>
         </table>
     </div>
+    <?php render_pagination($pagination, ['q'=>$search,'per_page'=>$pagination['per_page']]); ?>
 </section>
-<script>
-    function filterRows(v, id) {
-        document.querySelectorAll('#' + id + ' tbody tr').forEach(r => r.style.display = r.innerText.toLowerCase().includes(v.toLowerCase()) ? '' : 'none')
-    }
-</script>
 <script>
     function openLevelModal() {
         var m = document.getElementById('levelModal');

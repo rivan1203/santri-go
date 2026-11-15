@@ -62,32 +62,64 @@ if (isset($_GET['edit'])) {
     $q->execute([(int)$_GET['edit']]);
     $edit = $q->fetch() ?: null;
 }
-$rows = $pdo->query("SELECT u.id,u.full_name,u.username,u.role,u.created_at,s.id AS student_id,s.student_no,s.class_level FROM users u LEFT JOIN students s ON s.user_id=u.id ORDER BY u.role,u.full_name")->fetchAll();
+$search = trim((string)($_GET['q'] ?? ''));
+$roleFilter = (string)($_GET['role'] ?? 'all');
+if (!in_array($roleFilter, ['all', 'admin', 'santri'], true)) $roleFilter = 'all';
+$where = ' WHERE 1=1';
+$params = [];
+if ($search !== '') {
+    $like = '%' . $search . '%';
+    $where .= ' AND (u.full_name LIKE ? OR u.username LIKE ? OR s.student_no LIKE ?)';
+    array_push($params, $like, $like, $like);
+}
+if ($roleFilter !== 'all') {
+    $where .= ' AND u.role=?';
+    $params[] = $roleFilter;
+}
+require_once __DIR__ . '/includes/pagination.php';
+$count = $pdo->prepare("SELECT COUNT(*) FROM users u LEFT JOIN students s ON s.user_id=u.id$where");
+$count->execute($params);
+$pagination = pagination_state((int)$count->fetchColumn());
+$list = $pdo->prepare("SELECT u.id,u.full_name,u.username,u.role,u.created_at,s.id AS student_id,s.student_no,s.class_level FROM users u LEFT JOIN students s ON s.user_id=u.id$where ORDER BY u.role,u.full_name LIMIT {$pagination['per_page']} OFFSET {$pagination['offset']}");
+$list->execute($params);
+$rows = $list->fetchAll();
 require __DIR__ . '/includes/header.php'; ?>
 <section class="card">
-  <div class="section-head"><div><h2>Kelola akun pengguna</h2><p>Tambah atau ubah akun admin. Akun santri tetap terhubung dengan data santri.</p></div><button class="btn" type="button" onclick="openUserModal()">＋ Tambah admin</button></div>
-  <div class="pill"><?= count($rows) ?> akun terdaftar</div>
+    <div class="section-head">
+        <div>
+            <h2>Kelola akun pengguna</h2>
+            <p>Tambah atau ubah akun admin. Akun santri tetap terhubung dengan data santri.</p>
+        </div><button class="btn" type="button" onclick="openUserModal()">＋ Tambah admin</button>
+    </div>
+    <div class="pill"><?= number_format($pagination['total'], 0, ',', '.') ?> akun terdaftar</div>
 </section>
 <div class="premium-modal-backdrop <?= $edit ? 'is-open' : '' ?>" id="userModal" role="presentation" aria-hidden="<?= $edit ? 'false' : 'true' ?>">
- <section class="premium-modal method-modal-rich" role="dialog" aria-modal="true" aria-labelledby="userModalTitle">
-  <button class="premium-modal-close" type="button" onclick="closeUserModal()" aria-label="Tutup">×</button>
-  <div class="premium-modal-icon" aria-hidden="true">♙</div><div class="premium-modal-kicker">MANAJEMEN AKUN</div>
-  <h2 id="userModalTitle"><?= $edit ? 'Ubah akun pengguna' : 'Tambah akun admin' ?></h2><p>Lengkapi nama, username, dan password akun.</p>
-  <form method="post" class="form-grid"><input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="action" value="save"><input type="hidden" name="id" value="<?= (int)($edit['id'] ?? 0) ?>">
-   <div class="form-group full"><label>Nama lengkap</label><input class="input" name="full_name" required value="<?= e($edit['full_name'] ?? '') ?>"></div>
-   <div class="form-group full"><label>Username</label><input class="input" name="username" required value="<?= e($edit['username'] ?? '') ?>"></div>
-   <div class="form-group full"><label><?= $edit ? 'Password baru (opsional)' : 'Password awal admin' ?></label><input class="input" type="password" name="password" minlength="8" <?= $edit ? '' : 'required' ?>><span class="help"><?= $edit ? 'Kosongkan jika tidak ingin mengganti password.' : 'Minimal 8 karakter.' ?></span></div>
-   <div class="form-group full premium-modal-actions"><button class="btn btn-light" type="button" onclick="closeUserModal()">Batal</button><button class="btn" type="submit"><?= $edit ? 'Simpan perubahan' : '＋ Tambah admin' ?></button></div>
-  </form>
- </section>
+    <section class="premium-modal method-modal-rich" role="dialog" aria-modal="true" aria-labelledby="userModalTitle">
+        <button class="premium-modal-close" type="button" onclick="closeUserModal()" aria-label="Tutup">×</button>
+        <div class="premium-modal-icon" aria-hidden="true">♙</div>
+        <div class="premium-modal-kicker">MANAJEMEN AKUN</div>
+        <h2 id="userModalTitle"><?= $edit ? 'Ubah akun pengguna' : 'Tambah akun admin' ?></h2>
+        <p>Lengkapi nama, username, dan password akun.</p>
+        <form method="post" class="form-grid"><input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>"><input type="hidden" name="action" value="save"><input type="hidden" name="id" value="<?= (int)($edit['id'] ?? 0) ?>">
+            <div class="form-group full"><label>Nama lengkap</label><input class="input" name="full_name" required value="<?= e($edit['full_name'] ?? '') ?>"></div>
+            <div class="form-group full"><label>Username</label><input class="input" name="username" required value="<?= e($edit['username'] ?? '') ?>"></div>
+            <div class="form-group full"><label><?= $edit ? 'Password baru (opsional)' : 'Password awal admin' ?></label><input class="input" type="password" name="password" minlength="8" <?= $edit ? '' : 'required' ?>><span class="help"><?= $edit ? 'Kosongkan jika tidak ingin mengganti password.' : 'Minimal 8 karakter.' ?></span></div>
+            <div class="form-group full premium-modal-actions"><button class="btn btn-light" type="button" onclick="closeUserModal()">Batal</button><button class="btn" type="submit"><?= $edit ? 'Simpan perubahan' : '＋ Tambah admin' ?></button></div>
+        </form>
+    </section>
 </div>
 <section class="card" style="margin-top:20px">
     <div class="section-head">
         <div>
             <h2>Daftar user</h2>
             <p>Akun admin dan santri dalam sistem.</p>
-        </div><input class="input" style="max-width:270px" placeholder="Cari nama, username, NIS..." oninput="filterUsers(this.value)">
+        </div>
     </div>
+    <form method="get" class="student-filter-row" style="display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 16px"><input type="hidden" name="per_page" value="<?= (int)$pagination['per_page'] ?>"><input class="input" name="q" value="<?= e($search) ?>" placeholder="Cari nama, username, NIS..." style="flex:1;min-width:220px"><select name="role" style="max-width:190px">
+            <option value="all">Semua role</option>
+            <option value="admin" <?= $roleFilter === 'admin' ? 'selected' : '' ?>>Admin</option>
+            <option value="santri" <?= $roleFilter === 'santri' ? 'selected' : '' ?>>Santri</option>
+        </select><button class="btn" type="submit">Terapkan</button><a class="btn btn-light" href="<?= APP_BASE ?>/users.php">Reset</a></form>
     <div class="table-wrap">
         <table id="users-table">
             <thead>
@@ -112,14 +144,26 @@ require __DIR__ . '/includes/header.php'; ?>
                     </tr><?php endif; ?></tbody>
         </table>
     </div>
+    <?php render_pagination($pagination, ['q' => $search, 'role' => $roleFilter, 'per_page' => $pagination['per_page']]); ?>
 </section>
 <script>
-    function filterUsers(v) {
-        document.querySelectorAll('#users-table tbody tr').forEach(r => r.style.display = r.innerText.toLowerCase().includes(v.toLowerCase()) ? '' : 'none')
+    function openUserModal() {
+        const m = document.getElementById('userModal');
+        m.classList.add('is-open');
+        m.setAttribute('aria-hidden', 'false');
+        document.body.classList.add('premium-modal-open');
     }
-</script>
-<script>
-function openUserModal(){const m=document.getElementById('userModal');m.classList.add('is-open');m.setAttribute('aria-hidden','false');document.body.classList.add('premium-modal-open');}
-function closeUserModal(){const m=document.getElementById('userModal');m.classList.remove('is-open');m.setAttribute('aria-hidden','true');document.body.classList.remove('premium-modal-open');}
-document.getElementById('userModal').addEventListener('click',function(e){if(e.target===this)closeUserModal()});document.addEventListener('keydown',function(e){if(e.key==='Escape')closeUserModal()});
+
+    function closeUserModal() {
+        const m = document.getElementById('userModal');
+        m.classList.remove('is-open');
+        m.setAttribute('aria-hidden', 'true');
+        document.body.classList.remove('premium-modal-open');
+    }
+    document.getElementById('userModal').addEventListener('click', function(e) {
+        if (e.target === this) closeUserModal()
+    });
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') closeUserModal()
+    });
 </script><?php require __DIR__ . '/includes/footer.php'; ?>

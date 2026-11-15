@@ -4,7 +4,7 @@ declare(strict_types=1);
 session_start();
 
 const DB_HOST = '127.0.0.1';
-const DB_NAME = 'santri_go';
+const DB_NAME = 'santri_go_test';
 const DB_USER = 'root';
 const DB_PASS = '';
 

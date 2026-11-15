@@ -68,13 +68,8 @@ CREATE TABLE payments (
 
 -- Demo users. Password for both accounts: password
 INSERT INTO users (username, password_hash, role, full_name) VALUES
-('admin', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'admin', 'Administrator Keuangan'),
-('santri001', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'santri', 'Ahmad Fauzi');
-
-INSERT INTO students (user_id, student_no, class_level) VALUES
-(2, 'MH-2026-001', 'Wustha');
+('admin', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'admin', 'Administrator Keuangan');
 
 INSERT INTO fee_categories (name, amount, spp_amount, description) VALUES
-('Ula', 150000, 100000, 'Kategori jenjang Ula'),
-('Wustha', 200000, 125000, 'Kategori jenjang Wustha'),
-('Ulya', 250000, 150000, 'Kategori jenjang Ulya');
+('SMP', 150000, 100000, 'Kategori jenjang SMP'),
+('SMA', 200000, 125000, 'Kategori jenjang SMA');

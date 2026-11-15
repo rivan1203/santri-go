@@ -14,6 +14,57 @@
   </section>
 </div>
 <script>
+// Dialog aplikasi terpadu: seluruh notifikasi dan konfirmasi memakai modal premium, bukan dialog browser.
+(function () {
+    let activeDialog = null;
+    function buildDialog() {
+        let root = document.getElementById('appDialogModal');
+        if (root) return root;
+        root = document.createElement('div');
+        root.id = 'appDialogModal';
+        root.className = 'premium-modal-backdrop';
+        root.setAttribute('aria-hidden', 'true');
+        root.innerHTML = '<section class="premium-modal app-dialog-card" role="dialog" aria-modal="true" aria-labelledby="appDialogTitle" aria-describedby="appDialogMessage"><div class="premium-modal-icon warning" id="appDialogIcon">!</div><div class="premium-modal-kicker" id="appDialogKicker">SANTRI GO</div><h2 id="appDialogTitle">Informasi</h2><p id="appDialogMessage"></p><div class="premium-modal-actions" id="appDialogActions"></div></section>';
+        document.body.appendChild(root);
+        root.addEventListener('click', e => { if (e.target === root && activeDialog) activeDialog.finish(false); });
+        return root;
+    }
+    function openDialog(options) {
+        const root = buildDialog();
+        const title = root.querySelector('#appDialogTitle');
+        const message = root.querySelector('#appDialogMessage');
+        const icon = root.querySelector('#appDialogIcon');
+        const kicker = root.querySelector('#appDialogKicker');
+        const actions = root.querySelector('#appDialogActions');
+        title.textContent = options.title || 'Informasi';
+        message.textContent = options.message || '';
+        icon.textContent = options.type === 'success' ? '✓' : options.type === 'error' ? '×' : options.type === 'confirm' ? '?' : '!';
+        icon.className = 'premium-modal-icon ' + (options.type === 'error' ? 'error' : options.type === 'confirm' ? 'warning' : '');
+        kicker.textContent = options.kicker || 'SANTRI GO';
+        actions.replaceChildren();
+        return new Promise(resolve => {
+            let settled = false;
+            function finish(value) {
+                if (settled) return;
+                settled = true;
+                root.classList.remove('is-open'); root.setAttribute('aria-hidden', 'true');
+                document.body.classList.remove('premium-modal-open');
+                document.removeEventListener('keydown', onKey);
+                activeDialog = null; resolve(value);
+            }
+            function onKey(e) { if (e.key === 'Escape' && options.type === 'confirm') finish(false); }
+            activeDialog = { finish };
+            if (options.type === 'confirm') {
+                const cancel = document.createElement('button'); cancel.type='button'; cancel.className='btn btn-light'; cancel.textContent=options.cancelText || 'Batal'; cancel.addEventListener('click',()=>finish(false)); actions.appendChild(cancel);
+            }
+            const ok = document.createElement('button'); ok.type='button'; ok.className='btn ' + (options.type === 'confirm' ? 'btn-primary' : 'btn-primary'); ok.textContent=options.okText || 'Mengerti'; ok.addEventListener('click',()=>finish(options.type === 'confirm' ? true : true)); actions.appendChild(ok);
+            root.classList.add('is-open'); root.setAttribute('aria-hidden','false'); document.body.classList.add('premium-modal-open');
+            document.addEventListener('keydown', onKey); ok.focus();
+        });
+    }
+    window.showAppNotice = function(message, type) { return openDialog({message:String(message), type:type || 'info', title:type==='error'?'Terjadi Kesalahan':type==='success'?'Berhasil':'Informasi'}); };
+    window.showAppConfirm = function(message, options) { return openDialog(Object.assign({message:String(message), type:'confirm', title:'Konfirmasi Tindakan', okText:'Ya, lanjutkan'}, options || {})); };
+})();
 
 (function () {
     var loader = document.getElementById('schoolLoadingScreen');
