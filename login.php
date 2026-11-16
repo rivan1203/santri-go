@@ -70,6 +70,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($row && password_verify($password, $row['password_hash'])) {
         session_regenerate_id(true);
+        $_SESSION['session_locked'] = false;
+        $_SESSION['last_activity'] = time();
         $_SESSION['user'] = [
             'id' => (int) $row['id'],
             'username' => $row['username'],

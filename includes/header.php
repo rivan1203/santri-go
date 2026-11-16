@@ -26,6 +26,7 @@ unset($_SESSION['flash']);
 <link rel="stylesheet" href="<?= APP_BASE ?>/assets/style.css">
 </head>
 <body>
+<script>window.SANTRI_GO_BASE = <?= json_encode(APP_BASE) ?>; window.SANTRI_GO_CSRF = <?= json_encode(csrf_token()) ?>;</script>
 <div class="school-loading-screen is-hidden" id="schoolLoadingScreen" role="status" aria-live="polite" aria-label="Memuat aplikasi">
   <div class="school-loading-content">
     <div class="school-loader-orbit" aria-hidden="true">

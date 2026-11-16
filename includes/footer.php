@@ -236,6 +236,52 @@
         if (window.innerWidth > 760) closeSidebar();
     });
 })();
+
+(function () {
+    const timeoutMs = 5 * 60 * 1000;
+    let timer = null, locked = false, lastPing = 0;
+    const markup = `<div id="sessionIdleLock" class="premium-modal-backdrop is-open" aria-hidden="false" style="z-index:100000"><section class="premium-modal" role="dialog" aria-modal="true" aria-labelledby="sessionIdleTitle"><div class="premium-modal-icon warning">🔒</div><div class="premium-modal-kicker">SANTRI GO · KEAMANAN</div><h2 id="sessionIdleTitle">Sesi Dikunci</h2><p>Tidak ada aktivitas selama 5 menit. Masukkan kembali password akun untuk melanjutkan.</p><form id="sessionIdleForm"><label for="sessionIdlePassword">Password akun</label><input id="sessionIdlePassword" name="password" type="password" autocomplete="current-password" required style="width:100%;height:46px;padding:0 12px;border:1px solid #d7e1ee;border-radius:10px"><button class="btn btn-primary" type="submit" style="width:100%;margin-top:14px">Buka Kunci</button><div id="sessionIdleError" role="alert" style="color:#bd3434;font-size:13px;margin-top:10px;min-height:18px"></div></form></section></div>`;
+    function showLock() {
+        if (locked) return;
+        locked = true;
+        document.body.insertAdjacentHTML('beforeend', markup);
+        document.body.classList.add('premium-modal-open');
+        const form = document.getElementById('sessionIdleForm');
+        const input = document.getElementById('sessionIdlePassword');
+        const error = document.getElementById('sessionIdleError');
+        const button = form.querySelector('button');
+        input.focus();
+        form.addEventListener('submit', async function (event) {
+            event.preventDefault(); error.textContent = ''; button.disabled = true; button.textContent = 'Memeriksa...';
+            try {
+                const unlockData = new FormData(form); unlockData.append('csrf', window.SANTRI_GO_CSRF || '');
+                const response = await fetch((window.SANTRI_GO_BASE || '') + '/session_lock.php?action=unlock', {method:'POST', body:unlockData, credentials:'same-origin', headers:{'X-Requested-With':'XMLHttpRequest'}});
+                const result = await response.json();
+                if (result.success) { document.getElementById('sessionIdleLock').remove(); document.body.classList.remove('premium-modal-open'); locked = false; resetTimer(); return; }
+                error.textContent = result.message || 'Password tidak sesuai.'; input.value = ''; input.focus();
+            } catch (e) { error.textContent = 'Tidak dapat menghubungi server. Coba lagi.'; }
+            finally { button.disabled = false; button.textContent = 'Buka Kunci'; }
+        });
+    }
+    async function pingActivity() {
+        if (locked || Date.now() - lastPing < 15000) return;
+        lastPing = Date.now();
+        try { await fetch((window.SANTRI_GO_BASE || '') + '/session_lock.php?action=activity', {method:'POST', credentials:'same-origin', headers:{'X-Requested-With':'XMLHttpRequest'}}); } catch (e) {}
+    }
+    function resetTimer() {
+        if (locked) return;
+        clearTimeout(timer);
+        timer = setTimeout(async function () {
+            try { await fetch((window.SANTRI_GO_BASE || '') + '/session_lock.php?action=lock', {method:'POST', credentials:'same-origin', headers:{'X-Requested-With':'XMLHttpRequest'}}); } catch (e) {}
+            showLock();
+        }, timeoutMs);
+    }
+    ['mousemove','mousedown','keydown','touchstart','scroll','click'].forEach(function (name) {
+        document.addEventListener(name, function () { if (!locked) { resetTimer(); pingActivity(); } }, {passive:true});
+    });
+    document.addEventListener('visibilitychange', function () { if (!document.hidden && !locked) { resetTimer(); pingActivity(); } });
+    resetTimer();
+})();
 </script>
 </body>
 </html>

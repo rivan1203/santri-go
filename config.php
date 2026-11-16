@@ -2,7 +2,21 @@
 
 declare(strict_types=1);
 date_default_timezone_set('Asia/Jakarta');
-session_start();
+if (session_status() !== PHP_SESSION_ACTIVE) session_start();
+
+// Penguncian server-side: status ini tetap tersimpan meskipun halaman di-refresh.
+$isLockEndpoint = basename($_SERVER['SCRIPT_NAME'] ?? '') === 'session_lock.php';
+if (!$isLockEndpoint && !empty($_SESSION['user'])) {
+    $now = time();
+    $lastActivity = (int)($_SESSION['last_activity'] ?? $now);
+    if (!empty($_SESSION['session_locked']) || ($now - $lastActivity) >= 300) {
+        $_SESSION['session_locked'] = true;
+        require __DIR__ . '/session_locked_screen.php';
+        exit;
+    }
+    $_SESSION['last_activity'] = $now;
+}
+
 
 const DB_HOST = '127.0.0.1';
 const DB_NAME = 'santri_go';
